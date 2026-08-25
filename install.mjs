@@ -634,12 +634,13 @@ const PI_POINTER = {
  */
 const PI_CONTEXT = {
   id: 'pi-ai-context',
-  // 参数列表用 `[^)]*` 兜住：rc.7 给 toPiContext 加了第三个参数 onReplayDegrade，
-  // 写死两参的正则在那版上直接失配。只认「第一个实参是 options」，其余原样带过去。
-  find: /const context = attachments === (undefined|void 0)\s*\?\s*toPiContext\(options([^)]*)\)\s*:\s*await toPiContext\(options([^)]*)\);?/,
-  build: (ts, match) => 'const context = attachments === ' + match[1]
-    + ' ? toPiContext(dshQaOptions' + match[2] + ')'
-    + ' : await toPiContext(dshQaOptions' + match[3] + ')' + (ts ? '' : ';'),
+  // 锚住完整的 context 赋值，再只替换其中独立的 `options` 标识符。这样同时覆盖：
+  // - 旧版的 `toPiContext(options, ...)`；
+  // - 0.1.1-rc.2 起为 watchdog 注入 signal 的 `toPiContext({ ...options, signal: ... }, ...)`。
+  // 结尾用下一句 `const events =`（源码）或 `const iterator =`（构建产物）限定，
+  // 避免命中同一构建产物里的函数定义。
+  find: /const context = attachments === (?:undefined|void 0)[\s\S]*?\btoPiContext\([\s\S]*?\boptions\b[\s\S]*?(?=\n[ \t]*const (?:events|iterator) =)/,
+  build: (_ts, match) => match[0].replace(/\boptions\b/g, 'dshQaOptions'),
 }
 
 /**
