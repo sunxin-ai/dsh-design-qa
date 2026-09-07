@@ -16,9 +16,13 @@ node install.mjs --no-patches ...    # 这次不打
 只还原序列化那两处之一，会让图片撞上 `UNSUPPORTED_CONTENT`，那条会话再也走不下去。
 `install.mjs` 把三处当一个事务：任一处算不出来就一个字节都不写。
 
-## 一、`@deepseek-ai/dsh-host-apiproxy`：去掉图片准入拒绝
+## 一、消息准入：去掉图片准入拒绝
 
-改 `src/api-proxy.ts`（源码运行）与 `lib/index.js`（npm 安装）里的同一段：删掉
+DSH `0.1.2` 起，准入检查位于 `@deepseek-ai/dsh-api-session-controller` 的
+`src/commands.ts`；旧版位于 `@deepseek-ai/dsh-host-apiproxy` 的 `src/api-proxy.ts`。
+安装器识别这两个位置，也保留旧位置的还原能力。至少找到一处才算成功；两处都在时都检查。
+
+改对应源码文件与 `lib/index.js`（npm 安装）里的同一段：删掉
 `if (hasImage) { … MODEL_DOES_NOT_SUPPORT_IMAGES … }` 整块。
 
 原逻辑在消息准入处直接拒绝，用户粘贴的图片连会话都进不去。移除后图片保留在持久消息里，
@@ -74,8 +78,8 @@ if (containsImage && !model.input.includes('image')) {
 
 ## 脚本怎么找到 DSH
 
-按 profile 的 `node_modules` 解析 `@deepseek-ai/dsh-host-apiproxy` 与
-`@deepseek-ai/dsh-llm-deepseek`，`realpath` 之后就是包根目录。拿到的正是运行中的 dsh
+按 profile 的 `node_modules` 解析上述准入包与两个 LLM 适配器，
+`realpath` 之后就是包根目录。拿到的正是运行中的 dsh
 实际加载的那份：npm 安装时是真实目录，源码运行时那里是指向仓库 workspace 的软链。
 依次尝试的基点：`$DSH_HOME/profiles/<profile>`、`$DSH_HOME/profiles`、本包目录、PATH 上的 `dsh`。
 
@@ -105,8 +109,8 @@ DSH_REPO=<DSH 源码仓库根> node install.mjs --route-only
 自动打不上（上游改了那几处的写法）时照着上面三节改即可，改动本身很小：
 一处是删掉一个 `if` 块，一处是把抛错换成返回文字指针。
 
-要注入的完整代码就在 `install.mjs` 里 —— `ADMISSION`、`POINTER_FN`、`POINTER_CALL`
-三个常量各自带着 TS 与构建产物两种形态的原文，直接抄。
+要注入的完整代码就在 `install.mjs` 里 —— `ADMISSION`、`DS_POINTER`、`PI_POINTER`、
+`PI_CONTEXT` 各自兼容 TS 源码与构建产物。
 
 改完想让脚本认账（后续能幂等跳过、能 `--revert-patches`），在改动处留一行含
 `DSH-DESIGN-QA-PATCH` 的注释，并把改动前的原文另存为

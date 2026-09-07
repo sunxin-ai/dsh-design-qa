@@ -27,6 +27,9 @@ jobs:
           node --check install.mjs
           node --check lib/index.js
 
+      - name: 新旧补丁位置与事务回归
+        run: node --test tests/install.test.mjs
+
       - name: 从源码重建，确认与入库的构建产物一致
         run: |
           npx --yes tsdown@0.15.12 --entry src/index.ts --format esm --out-dir /tmp/rebuilt --dts false --no-config
@@ -76,5 +79,5 @@ jobs:
         if: failure()
         run: |
           echo "::error::三处本体补丁的锚点对不上最新的 @deepseek-ai/dsh。"
-          echo "上游多半改写了那几处的写法。按 patches/README.md 重做 install.mjs 里的"
-          echo "ADMISSION / POINTER_FN / POINTER_CALL / PI_POINTER / PI_CONTEXT 规则。"
+          echo "检查上游是否迁移了包或改写了代码。按 patches/README.md 检查 install.mjs 里的"
+          echo "PATCH_TARGETS / ADMISSION / DS_POINTER / PI_POINTER / PI_CONTEXT 规则。"

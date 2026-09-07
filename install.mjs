@@ -517,7 +517,7 @@ function origPath(path) {
 const REVERT_HINT = `node ${join(HERE, 'install.mjs')} --revert-patches`
 
 /**
- * 落点一：`dsh-host-apiproxy` 的消息准入检查。
+ * 落点一：消息准入检查。0.1.2 起从 `dsh-host-apiproxy` 搬到 `dsh-api-session-controller`。
  *
  * 原逻辑发现纯文本路由带图就直接拒绝，用户粘贴的图连会话都进不去。整块移除后，
  * 图片照常进持久消息与会话日志，界面气泡里显示的仍是一张图。
@@ -670,9 +670,20 @@ function declaresImageInput(root, probes) {
 
 const PATCH_TARGETS = [
   {
-    pkg: '@deepseek-ai/dsh-host-apiproxy',
-    repoDir: 'packages/host/apiproxy',
-    forms: { ts: 'src/api-proxy.ts', js: 'lib/index.js' },
+    // 同一个准入补丁在新旧 DSH 中的位置。至少找到一处；两处都在时都检查，
+    // 也保留旧位置的还原能力，避免升级后遗留撤不掉的补丁。
+    locations: [
+      {
+        pkg: '@deepseek-ai/dsh-api-session-controller',
+        repoDir: 'packages/api/session-controller',
+        forms: { ts: 'src/commands.ts', js: 'lib/index.js' },
+      },
+      {
+        pkg: '@deepseek-ai/dsh-host-apiproxy',
+        repoDir: 'packages/host/apiproxy',
+        forms: { ts: 'src/api-proxy.ts', js: 'lib/index.js' },
+      },
+    ],
     edits: [ADMISSION],
   },
   {
@@ -814,32 +825,34 @@ const OUTCOMES = {
  * 那条会话再也走不下去 —— 比一处都不打糟得多。所以宁可整轮不做。
  * @returns `{ lines, ok }` —— lines 逐条汇报，ok 为 false 时调用方应以非零码退出。
  */
-function patchBody(profile, { revert = false, dryRun = false } = {}) {
+export function patchBody(profile, { revert = false, dryRun = false } = {}) {
   const lines = []
   const plans = []
   let ok = true
 
   // 第一阶段：只算，不写。
   for (const target of PATCH_TARGETS) {
-    const roots = findPackageRoots(target.pkg, target.repoDir, profile)
-    if (roots.length === 0) {
+    const locations = target.locations ?? [target]
+    const found = locations.flatMap((location) => findPackageRoots(location.pkg, location.repoDir, profile)
+      .map((root) => ({ ...location, root })))
+    if (found.length === 0) {
       ok = false
       // 报到「找不到」为止就停手，不去猜路径。这条信息要同时对两类用户成立：
       // npm 装的（没有源码仓库，问题多半出在 DSH_HOME）与源码跑的（需要 DSH_REPO）。
-      lines.push(`✗ ${target.pkg}：定位不到，本体补丁没打。`)
+      lines.push(`✗ ${locations.map((location) => location.pkg).join(' / ')}：定位不到，本体补丁没打。`)
       lines.push(`  已在这些位置找过：${DSH_HOME}/profiles[/${profile}]、本包目录、PATH 上的 dsh`)
       lines.push('  npm 装的 DSH：多半是 DSH_HOME 指错了，确认后重跑；')
       lines.push('  源码跑的 DSH：DSH_REPO=<仓库根> node install.mjs --route-only')
       continue
     }
     let seen = 0
-    for (const root of roots) {
+    for (const { root, pkg, forms } of found) {
       // 只还原不打补丁的落点：打补丁时必须查一眼，查到残留就硬停。
       // 那份 serialize.ts 若还带着旧补丁，说明用户是从 0.1.3 及更早升上来的 ——
       // 此时新旧两处会同时生效（旧的虽已失效，但 lib/index.js 的标记会让新补丁被判成
       // 「已打过」而跳过），必须先还原干净再装。
       if (target.revertOnly === true && !revert) {
-        for (const file of formFiles(root, target.forms)) {
+        for (const file of formFiles(root, forms)) {
           if (!isPatched(readFileSync(file, 'utf8'))) continue
           ok = false
           lines.push(`✗ ${file} 仍带着旧版本的补丁（0.1.3 及更早打在这里）。`)
@@ -859,7 +872,7 @@ function patchBody(profile, { revert = false, dryRun = false } = {}) {
       if (retired !== undefined) {
         // 计入 seen：这一份是「查过且判定不需要」，不是「没找到」，不该触发下面的硬失败。
         seen += 1
-        lines.push(`· ${target.pkg} @ ${root}`)
+        lines.push(`· ${pkg} @ ${root}`)
         lines.push(`  已自己声明支持图片输入，这处补丁不再需要，跳过。`)
         lines.push(`  依据 ${retired.rel}：${retired.text}`)
         lines.push('  若之前打过，先 node install.mjs --revert-patches 撤掉它。')
@@ -867,10 +880,12 @@ function patchBody(profile, { revert = false, dryRun = false } = {}) {
       }
 
       // 打到哪份 DSH 上必须显式打印：万一机器上有多份，用户要能一眼看出改错了没有。
-      lines.push(`${revert ? '还原' : '改'} ${target.pkg} @ ${root}`)
-      const files = formFiles(root, target.forms)
+      lines.push(`${revert ? '还原' : '改'} ${pkg} @ ${root}`)
+      const files = formFiles(root, forms)
       if (files.length === 0) {
-        lines.push(`  · 既无 ${target.forms.ts} 也无 ${target.forms.js}，跳过`)
+        // npm 包不带退休位置的 serialize.ts，没有它就没有旧补丁需要还原。
+        if (target.revertOnly === true) { seen += 1; continue }
+        lines.push(`  · 既无 ${forms.ts} 也无 ${forms.js}，跳过`)
         continue
       }
       for (const file of files) {
@@ -1025,7 +1040,9 @@ async function main() {
   return patches && !patchOk ? 1 : 0
 }
 
-main().then((code) => { process.exitCode = code }, (error) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})
+if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().then((code) => { process.exitCode = code }, (error) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+}
