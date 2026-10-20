@@ -76,6 +76,10 @@ if (containsImage && !model.input.includes('image')) {
 
 声明了 `input: [text, image]` 的路由**原样放行**，图片照常送进去：这条补丁只对纯文本路由生效。
 
+DSH `0.2.1-rc.2` 起，`toPiContext` 接收的是上游加工过的 `request`，其中可能新增
+Anthropic 的工具占位声明。安装器保留 `request` 的这些字段，只替换 `messages`，
+并保留原有 watchdog 信号；旧版直接接收 `options` 的调用也继续支持。
+
 ## 脚本怎么找到 DSH
 
 按 profile 的 `node_modules` 解析上述准入包与两个 LLM 适配器，

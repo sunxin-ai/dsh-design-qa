@@ -634,13 +634,19 @@ const PI_POINTER = {
  */
 const PI_CONTEXT = {
   id: 'pi-ai-context',
-  // 锚住完整的 context 赋值，再只替换其中独立的 `options` 标识符。这样同时覆盖：
+  // 锚住完整的 context 赋值，并识别传给 toPiContext 的请求变量。这样同时覆盖：
   // - 旧版的 `toPiContext(options, ...)`；
-  // - 0.1.1-rc.2 起为 watchdog 注入 signal 的 `toPiContext({ ...options, signal: ... }, ...)`。
+  // - 0.1.1-rc.2 起为 watchdog 注入 signal 的 `toPiContext({ ...options, signal: ... }, ...)`；
+  // - 0.2.1-rc.2 起使用带 Anthropic 工具占位声明的 `request`。
   // 结尾用下一句 `const events =`（源码）或 `const iterator =`（构建产物）限定，
   // 避免命中同一构建产物里的函数定义。
-  find: /const context = attachments === (?:undefined|void 0)[\s\S]*?\btoPiContext\([\s\S]*?\boptions\b[\s\S]*?(?=\n[ \t]*const (?:events|iterator) =)/,
-  build: (_ts, match) => match[0].replace(/\boptions\b/g, 'dshQaOptions'),
+  find: /^([ \t]*)const context = attachments === (?:undefined|void 0)\s*\?\s*toPiContext\((options|request)\b[\s\S]*?(?=\n[ \t]*const (?:events|iterator) =)/m,
+  build: (_ts, match) => {
+    if (match[2] === 'options') return match[0].replace(/\boptions\b/g, 'dshQaOptions')
+    // 保留上游对 tools 等字段的加工，只接入图片已转为文字指针的 messages。
+    return `${match[1]}const dshQaRequest = { ...request, messages: dshQaOptions.messages }\n`
+      + match[0].replace(/\brequest\b/g, 'dshQaRequest')
+  },
 }
 
 /**

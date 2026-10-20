@@ -23,23 +23,27 @@ const admission = `async function admit(hasImage) {
 }
 `
 
-function piAdapter(next) {
+function piAdapter(next, contextInput = 'options') {
+  const prepared = contextInput === 'request' ? `  const request = options.needsPlaceholder
+    ? { ...options, tools: [{ name: 'DeferredToolPlaceholder' }, ...(options.tools ?? [])] }
+    : options
+` : ''
   return `async function route(options, model) {
-  const containsImage = options.messages.some(message => contentHasImage(message.content))
+${prepared}  const containsImage = options.messages.some(message => contentHasImage(message.content))
   if (containsImage && !model.input.includes('image')) {
     throw new LlmError('model does not support image input', 'UNSUPPORTED_CONTENT')
   }
   const attachments = containsImage ? attachmentService : undefined
   const context = attachments === undefined
-    ? toPiContext(options, undefined)
-    : await toPiContext({ ...options, signal: watchdog.signal }, attachments)
+    ? toPiContext(${contextInput}, undefined)
+    : await toPiContext({ ...${contextInput}, signal: watchdog.signal }, attachments)
   const ${next} = context
   return ${next}
 }
 `
 }
 
-function fixture(t, layouts = ['current'], forms = ['ts', 'js']) {
+function fixture(t, layouts = ['current'], forms = ['ts', 'js'], contextInput = 'options') {
   const root = mkdtempSync(join(tmpdir(), 'dshqa-install-test-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const home = join(root, 'home')
@@ -68,7 +72,7 @@ function fixture(t, layouts = ['current'], forms = ['ts', 'js']) {
   }
   pkg('dsh-llm-deepseek', { 'lib/index.js': 'const model = { inputModalities: ["text", "image"] }\n' })
   const pi = pkg('dsh-llm-pi-ai', Object.fromEntries(forms.map(form => [
-    form === 'ts' ? 'src/adapter.ts' : 'lib/index.js', piAdapter(form === 'ts' ? 'events' : 'iterator'),
+    form === 'ts' ? 'src/adapter.ts' : 'lib/index.js', piAdapter(form === 'ts' ? 'events' : 'iterator', contextInput),
   ])))
   if (forms.includes('js')) piJs = join(pi, 'lib/index.js')
   function run(options = {}) {
@@ -126,6 +130,45 @@ for (const layout of Object.keys(admissionLocations)) {
       f.unchanged()
     })
   }
+}
+
+for (const forms of [['js'], ['ts', 'js']]) {
+  test(`prepared request, ${forms.join('+')}: preserve upstream tools while converting only text-model images`, async (t) => {
+    const f = fixture(t, ['current'], forms, 'request')
+    const result = f.run()
+    assert.ok(result.ok, result.lines.join('\n'))
+    execFileSync(process.execPath, ['--check', f.piJs])
+    const route = runInNewContext(`${readFileSync(f.piJs, 'utf8')}; route`, {
+      contentHasImage: blocks => blocks.some(block => block.type === 'image'),
+      attachmentService: {}, watchdog: { signal: 'watchdog-signal' },
+      toPiContext: options => options,
+    })
+    for (const needsPlaceholder of [true, false]) {
+      const options = { needsPlaceholder, tools: [{ name: 'deferred', deferLoading: true }], messages: [{ content: [
+        { type: 'image', attachment: { attachmentId: 'sha256:prepared', mediaType: 'image/png', width: 2, height: 3 } },
+      ] }] }
+      const original = JSON.stringify(options)
+      for (const input of [['text'], ['text', 'image']]) {
+        const context = await route(options, { input })
+        assert.equal(JSON.stringify(context.tools), JSON.stringify(needsPlaceholder
+          ? [{ name: 'DeferredToolPlaceholder' }, ...options.tools] : options.tools))
+        if (input.includes('image')) {
+          assert.equal(context.messages[0].content[0].type, 'image')
+          assert.equal(context.signal, 'watchdog-signal')
+        } else {
+          assert.equal(context.messages[0].content[0].type, 'text')
+          assert.match(context.messages[0].content[0].text, /attachment=sha256:prepared/)
+        }
+        assert.equal(JSON.stringify(options), original)
+      }
+      const textOptions = { ...options, messages: [{ content: [{ type: 'text', text: 'hello' }] }] }
+      const textContext = await route(textOptions, { input: ['text'] })
+      assert.equal(textContext.messages[0].content[0].text, 'hello')
+      assert.equal(textContext.tools.length, needsPlaceholder ? 2 : 1)
+    }
+    assert.ok(f.run({ revert: true }).ok)
+    f.unchanged()
+  })
 }
 
 test('both admission locations are patched and reverted when present', (t) => {
